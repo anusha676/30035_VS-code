@@ -1,0 +1,223 @@
+import streamlit as st
+import pandas as pd
+from datetime import date, datetime
+import json
+from backend import (
+    add_campaign, get_all_campaigns, update_campaign, delete_campaign,
+    add_customer, get_all_customers, add_communication, get_communications_for_campaign,
+    get_campaign_performance, get_insights
+)
+
+# --- APP LAYOUT & TITLE ---
+st.set_page_config(layout="wide", page_title="Marketing Campaign Manager")
+st.title("💰 Marketing Campaign Manager")
+
+# --- SIDEBAR FOR NAVIGATION ---
+st.sidebar.title("Navigation")
+page = st.sidebar.radio("Go to", ["Campaign Management", "Customer Segmentation", "Performance Tracking", "Communication"])
+
+# --- Helper function to convert list of dicts to DataFrame ---
+def dict_list_to_df(data, date_cols=None):
+    """Converts a list of dictionaries to a pandas DataFrame for display."""
+    df = pd.DataFrame(data)
+    if date_cols:
+        for col in df.columns:
+            if col in date_cols:
+                df[col] = pd.to_datetime(df[col]).dt.date
+    return df
+
+# --- MAIN PAGE CONTENT ---
+if page == "Campaign Management":
+    st.header("Campaign Management")
+    
+    # CREATE Operation
+    with st.expander("➕ Create a New Campaign"):
+        with st.form("new_campaign_form", clear_on_submit=True):
+            name = st.text_input("Campaign Name")
+            budget = st.number_input("Budget", min_value=0.0, format="%.2f")
+            col1, col2 = st.columns(2)
+            start_date = col1.date_input("Start Date", date.today())
+            end_date = col2.date_input("End Date", date.today())
+            description = st.text_area("Description")
+            submitted = st.form_submit_button("Create Campaign")
+            if submitted:
+                if name and budget >= 0 and start_date and end_date:
+                    add_campaign(name, budget, start_date, end_date, description)
+                    st.success(f"Campaign '{name}' created successfully!")
+                else:
+                    st.error("Please fill in all required fields (Name, Budget, Start Date, End Date).")
+    
+    st.subheader("Existing Campaigns")
+    campaigns = get_all_campaigns()
+    df_campaigns = dict_list_to_df(campaigns, date_cols=['start_date', 'end_date', 'created_at'])
+
+    # FILTER: by status (Active, Upcoming, Completed)
+    today = date.today()
+    status_options = ["All", "Active", "Upcoming", "Completed"]
+    selected_status = st.selectbox("Filter by Status", options=status_options)
+    
+    if selected_status == "Active":
+        df_filtered = df_campaigns[(df_campaigns['start_date'] <= today) & (df_campaigns['end_date'] >= today)]
+    elif selected_status == "Upcoming":
+        df_filtered = df_campaigns[df_campaigns['start_date'] > today]
+    elif selected_status == "Completed":
+        df_filtered = df_campaigns[df_campaigns['end_date'] < today]
+    else:
+        df_filtered = df_campaigns
+
+    st.dataframe(df_filtered, use_container_width=True)
+    
+    # UPDATE & DELETE Operations
+    if not df_campaigns.empty:
+        with st.expander("✏️ Update or Delete a Campaign"):
+            campaign_names = {c['campaign_id']: c['name'] for c in campaigns}
+            campaign_to_edit = st.selectbox("Select Campaign to Edit", options=list(campaign_names.keys()), format_func=lambda x: campaign_names.get(x, "N/A"))
+            
+            if campaign_to_edit:
+                selected_campaign = df_campaigns[df_campaigns['campaign_id'] == campaign_to_edit].iloc[0]
+                with st.form("edit_campaign_form"):
+                    edited_name = st.text_input("New Name", value=selected_campaign['name'])
+                    edited_budget = st.number_input("New Budget", min_value=0.0, format="%.2f", value=float(selected_campaign['budget']))
+                    col1, col2 = st.columns(2)
+                    edited_start = col1.date_input("New Start Date", value=selected_campaign['start_date'])
+                    edited_end = col2.date_input("New End Date", value=selected_campaign['end_date'])
+                    edited_desc = st.text_area("New Description", value=selected_campaign['description'])
+                    
+                    col_update, col_delete = st.columns(2)
+                    update_submitted = col_update.form_submit_button("Update Campaign")
+                    delete_submitted = col_delete.form_submit_button("Delete Campaign")
+                    
+                    if update_submitted:
+                        update_campaign(campaign_to_edit, edited_name, edited_budget, edited_start, edited_end, edited_desc)
+                        st.success("Campaign updated successfully!")
+                        st.experimental_rerun()
+                    if delete_submitted:
+                        delete_campaign(campaign_to_edit)
+                        st.warning("Campaign deleted.")
+                        st.experimental_rerun()
+    else:
+        st.info("No campaigns found. Create one to get started!")
+
+elif page == "Customer Segmentation":
+    st.header("Customer Management & Segmentation")
+    
+    # CREATE Customer
+    with st.expander("➕ Add a New Customer"):
+        with st.form("new_customer_form", clear_on_submit=True):
+            name = st.text_input("Customer Name")
+            email = st.text_input("Email")
+            demographics_str = st.text_area("Demographics (JSON format)", '{}')
+            submitted = st.form_submit_button("Add Customer")
+            if submitted:
+                try:
+                    demographics = json.loads(demographics_str)
+                    add_customer(name, email, demographics)
+                    st.success(f"Customer '{name}' added successfully!")
+                except json.JSONDecodeError:
+                    st.error("Invalid JSON format for demographics.")
+
+    st.subheader("Existing Customers")
+    customers = get_all_customers()
+    if customers:
+        df_customers = pd.DataFrame(customers)
+        df_customers['created_at'] = pd.to_datetime(df_customers['created_at']).dt.date
+        df_customers['demographics'] = df_customers['demographics'].apply(json.dumps)
+        
+        # FILTER: by demographics
+        st.info("Enter a key and value to filter customers by their demographics.")
+        col_key, col_value = st.columns(2)
+        demographics_key = col_key.text_input("Filter by Demographic Key (e.g., 'region')")
+        demographics_value = col_value.text_input("Filter by Demographic Value (e.g., 'West Coast')")
+        
+        if demographics_key and demographics_value:
+            filtered_customers = [c for c in customers if c['demographics'] and c['demographics'].get(demographics_key) == demographics_value]
+            df_customers_filtered = pd.DataFrame(filtered_customers)
+            if not df_customers_filtered.empty:
+                df_customers_filtered['demographics'] = df_customers_filtered['demographics'].apply(json.dumps)
+                st.dataframe(df_customers_filtered, use_container_width=True)
+            else:
+                st.warning("No customers found with the specified demographic.")
+        else:
+            st.dataframe(df_customers, use_container_width=True)
+    else:
+        st.info("No customers found.")
+
+elif page == "Performance Tracking":
+    st.header("Campaign Performance Dashboard")
+    insights = get_insights()
+
+    # AGGREGATION using st.metric
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Active Campaigns", insights.get('active_campaigns_count', 0))
+    with col2:
+        st.metric("Total Emails Sent", insights.get('total_emails_sent', 0))
+    with col3:
+        st.metric("Total Clicks", insights.get('total_clicks', 0))
+    
+    st.markdown("---")
+    st.subheader("Campaign Performance Metrics")
+    performance_data = get_campaign_performance()
+    if performance_data:
+        df_performance = pd.DataFrame(performance_data)
+        
+        # Calculate CTR and Open Rate
+        df_performance['open_rate'] = (df_performance['total_emails_opened'] / df_performance['total_emails_sent'] * 100).fillna(0).round(2)
+        df_performance['ctr'] = (df_performance['total_emails_clicked'] / df_performance['total_emails_sent'] * 100).fillna(0).round(2)
+        
+        # SORTING
+        sort_by = st.selectbox("Sort by", options=['total_emails_sent', 'open_rate', 'ctr'])
+        df_sorted = df_performance.sort_values(by=sort_by, ascending=False)
+        
+        st.dataframe(df_sorted, use_container_width=True, column_config={"open_rate": "Open Rate (%)", "ctr": "CTR (%)"})
+
+        # DASHBOARD: Real-time visualization
+        st.subheader("Performance Visualization")
+        st.bar_chart(df_sorted, x='campaign_name', y=['open_rate', 'ctr'])
+    else:
+        st.info("No campaign performance data available.")
+
+elif page == "Communication":
+    st.header("Campaign Communications")
+    campaigns = get_all_campaigns()
+    campaign_names = {c['campaign_id']: c['name'] for c in campaigns}
+    
+    # CREATE Communication
+    with st.expander("➕ Draft and Schedule an Email"):
+        with st.form("new_communication_form", clear_on_submit=True):
+            campaign_ids = list(campaign_names.keys())
+            if campaign_ids:
+                selected_campaign_id = st.selectbox("Select Campaign", options=campaign_ids, format_func=lambda x: campaign_names.get(x, "N/A"))
+                subject = st.text_input("Email Subject")
+                body = st.text_area("Email Body")
+                
+                # Assume a fixed segment for now, as dynamic segment creation is a complex task
+                segment_id = st.number_input("Segment ID", min_value=1, value=1)
+                
+                col1, col2 = st.columns(2)
+                scheduled_date = col1.date_input("Scheduled Date", date.today())
+                scheduled_time_input = col2.time_input("Scheduled Time", datetime.now().time())
+                scheduled_time = datetime.combine(scheduled_date, scheduled_time_input)
+
+                submitted = st.form_submit_button("Schedule Email")
+                if submitted:
+                    add_communication(selected_campaign_id, segment_id, subject, body, scheduled_time)
+                    st.success("Email scheduled successfully!")
+            else:
+                st.info("No campaigns available to schedule communications.")
+
+    st.subheader("Communication History")
+    
+    if campaigns:
+        df_campaigns = pd.DataFrame(campaigns)
+        selected_campaign_id_hist = st.selectbox("View History for Campaign", options=df_campaigns['campaign_id'], format_func=lambda x: df_campaigns[df_campaigns['campaign_id'] == x]['name'].iloc[0])
+        if selected_campaign_id_hist:
+            communications = get_communications_for_campaign(selected_campaign_id_hist)
+            if communications:
+                df_comm = pd.DataFrame(communications)
+                df_comm['scheduled_time'] = pd.to_datetime(df_comm['scheduled_time'])
+                st.dataframe(df_comm.drop(columns=['campaign_id']), use_container_width=True)
+            else:
+                st.info("No communications found for this campaign.")
+    else:
+        st.info("Please create a campaign to view its communication history.")
