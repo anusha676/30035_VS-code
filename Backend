@@ -1,0 +1,323 @@
+import psycopg2
+from psycopg2 import sql
+from psycopg2.extras import DictCursor
+import os
+import json
+
+# --- DATABASE CONNECTION & SETUP ---
+def get_db_connection():
+    """
+    Establishes a connection to the PostgreSQL database.
+    Update with your specific database credentials.
+    """
+    try:
+        conn = psycopg2.connect(
+            dbname=os.environ.get("Markwting"),
+            user=os.environ.get("postgress"),
+            password=os.environ.get("Anusha@369"),
+            host=os.environ.get("localhost"),
+            port=os.environ.get("5432")
+        )
+        return conn
+    except psycopg2.OperationalError as e:
+        print(f"Error connecting to database: {e}")
+        return None
+
+def create_tables():
+    """
+    Creates the necessary database tables based on the provided schemas.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            # Table for campaigns
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS campaigns (
+                    campaign_id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    budget NUMERIC(12,2) NOT NULL,
+                    start_date DATE NOT NULL,
+                    end_date DATE NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            # Table for marketing channels
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS channels (
+                    channel_id SERIAL PRIMARY KEY,
+                    campaign_id INT REFERENCES campaigns(campaign_id) ON DELETE CASCADE,
+                    channel_name VARCHAR(100) NOT NULL
+                );
+            """)
+
+            # Table for customers
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS customers (
+                    customer_id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    email VARCHAR(255) UNIQUE NOT NULL,
+                    demographics JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            # Table for customer segments
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS segments (
+                    segment_id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    criteria JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            # Relation: Customers belonging to segments
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS segment_customers (
+                    segment_id INT REFERENCES segments(segment_id) ON DELETE CASCADE,
+                    customer_id INT REFERENCES customers(customer_id) ON DELETE CASCADE,
+                    PRIMARY KEY (segment_id, customer_id)
+                );
+            """)
+
+            # Table for campaign performance metrics
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS campaign_performance (
+                    performance_id SERIAL PRIMARY KEY,
+                    campaign_id INT REFERENCES campaigns(campaign_id) ON DELETE CASCADE,
+                    channel_id INT REFERENCES channels(channel_id) ON DELETE CASCADE,
+                    emails_sent INT DEFAULT 0,
+                    emails_opened INT DEFAULT 0,
+                    emails_clicked INT DEFAULT 0,
+                    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            # Table for communications (scheduled/sent emails)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS communications (
+                    communication_id SERIAL PRIMARY KEY,
+                    campaign_id INT REFERENCES campaigns(campaign_id) ON DELETE CASCADE,
+                    segment_id INT REFERENCES segments(segment_id) ON DELETE SET NULL,
+                    subject VARCHAR(255),
+                    body TEXT,
+                    scheduled_time TIMESTAMP,
+                    sent_time TIMESTAMP,
+                    status VARCHAR(50) DEFAULT 'scheduled'
+                );
+            """)
+            
+            # Table for revenue tracking (inferred from prompt title)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS revenues (
+                    revenue_id SERIAL PRIMARY KEY,
+                    campaign_id INTEGER REFERENCES campaigns(campaign_id) ON DELETE CASCADE,
+                    amount NUMERIC(10, 2) NOT NULL,
+                    date DATE NOT NULL,
+                    notes TEXT
+                );
+            """)
+
+            # Table for expense tracking (inferred from prompt title)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS expenses (
+                    expense_id SERIAL PRIMARY KEY,
+                    campaign_id INTEGER REFERENCES campaigns(campaign_id) ON DELETE CASCADE,
+                    amount NUMERIC(10, 2) NOT NULL,
+                    date DATE NOT NULL,
+                    notes TEXT
+                );
+            """)
+        conn.commit()
+        print("Database tables ensured.")
+    except Exception as e:
+        conn.rollback()
+        print(f"Error creating tables: {e}")
+    finally:
+        conn.close()
+
+# --- CAMPAIGN CRUD ---
+def add_campaign(name, budget, start_date, end_date, description):
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO campaigns (name, budget, start_date, end_date, description) VALUES (%s, %s, %s, %s, %s);",
+                        (name, budget, start_date, end_date, description))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Error adding campaign: {e}")
+    finally:
+        conn.close()
+
+def get_all_campaigns():
+    conn = get_db_connection()
+    if not conn: return []
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT * FROM campaigns ORDER BY start_date DESC;")
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+def update_campaign(campaign_id, name, budget, start_date, end_date, description):
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE campaigns SET name = %s, budget = %s, start_date = %s, end_date = %s, description = %s WHERE campaign_id = %s;",
+                        (name, budget, start_date, end_date, description, campaign_id))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Error updating campaign: {e}")
+    finally:
+        conn.close()
+
+def delete_campaign(campaign_id):
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM campaigns WHERE campaign_id = %s;", (campaign_id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Error deleting campaign: {e}")
+    finally:
+        conn.close()
+        
+# --- CUSTOMER CRUD ---
+def add_customer(name, email, demographics):
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO customers (name, email, demographics) VALUES (%s, %s, %s);",
+                        (name, email, json.dumps(demographics)))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Error adding customer: {e}")
+    finally:
+        conn.close()
+
+def get_all_customers():
+    conn = get_db_connection()
+    if not conn: return []
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT * FROM customers ORDER BY created_at DESC;")
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+        
+# --- PERFORMANCE TRACKING CRUD ---
+def get_campaign_performance():
+    conn = get_db_connection()
+    if not conn: return []
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("""
+                SELECT 
+                    cp.campaign_id,
+                    c.name as campaign_name,
+                    SUM(cp.emails_sent) as total_emails_sent,
+                    SUM(cp.emails_opened) as total_emails_opened,
+                    SUM(cp.emails_clicked) as total_emails_clicked
+                FROM campaign_performance cp
+                JOIN campaigns c ON cp.campaign_id = c.campaign_id
+                GROUP BY cp.campaign_id, c.name
+                ORDER BY total_emails_sent DESC;
+            """)
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+# --- COMMUNICATION CRUD ---
+def add_communication(campaign_id, segment_id, subject, body, scheduled_time):
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO communications (campaign_id, segment_id, subject, body, scheduled_time) VALUES (%s, %s, %s, %s, %s);",
+                        (campaign_id, segment_id, subject, body, scheduled_time))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Error scheduling communication: {e}")
+    finally:
+        conn.close()
+
+def get_communications_for_campaign(campaign_id):
+    conn = get_db_connection()
+    if not conn: return []
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT * FROM communications WHERE campaign_id = %s ORDER BY scheduled_time DESC;", (campaign_id,))
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+        
+# --- REVENUE/EXPENSE CRUD (to match prompt title) ---
+def add_revenue(campaign_id, amount, date, notes):
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO revenues (campaign_id, amount, date, notes) VALUES (%s, %s, %s, %s);",
+                        (campaign_id, amount, date, notes))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Error adding revenue: {e}")
+    finally:
+        conn.close()
+
+def add_expense(campaign_id, amount, date, notes):
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO expenses (campaign_id, amount, date, notes) VALUES (%s, %s, %s, %s);",
+                        (campaign_id, amount, date, notes))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Error adding expense: {e}")
+    finally:
+        conn.close()
+
+# --- BUSINESS INSIGHTS ---
+def get_insights():
+    conn = get_db_connection()
+    if not conn: return {}
+    insights = {}
+    try:
+        with conn.cursor() as cur:
+            # COUNT: Total number of active campaigns
+            cur.execute("SELECT COUNT(*) FROM campaigns WHERE end_date >= CURRENT_DATE;")
+            insights['active_campaigns_count'] = cur.fetchone()[0] or 0
+
+            # SUM: Total emails sent
+            cur.execute("SELECT SUM(emails_sent) FROM campaign_performance;")
+            insights['total_emails_sent'] = cur.fetchone()[0] or 0
+
+            # SUM: Total clicks
+            cur.execute("SELECT SUM(emails_clicked) FROM campaign_performance;")
+            insights['total_clicks'] = cur.fetchone()[0] or 0
+    except Exception as e:
+        conn.rollback()
+        print(f"Error fetching insights: {e}")
+    finally:
+        conn.close()
+    return insights
+
+if __name__ == '__main__':
+    create_tables()
+    print("Backend setup complete. Ready to connect.")
